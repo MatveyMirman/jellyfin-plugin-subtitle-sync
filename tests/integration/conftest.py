@@ -1,5 +1,6 @@
 """Pytest configuration for integration tests."""
 import os
+import re
 import time
 
 import pytest
@@ -10,6 +11,19 @@ ADMIN_USER = os.environ.get("JELLYFIN_ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("JELLYFIN_ADMIN_PASS", "admin")
 VIEWER_USER = os.environ.get("JELLYFIN_VIEWER_USER", "viewer")
 VIEWER_PASS = os.environ.get("JELLYFIN_VIEWER_PASS", "viewer")
+
+AUTH_SCHEME = (
+    'MediaBrowser Client="Integration Tests", '
+    'Device="pytest", DeviceId="test-device-001", '
+    'Version="1.0.0"'
+)
+
+
+def token_from_headers(headers):
+    """Extract the raw access token out of an Authorization header."""
+    match = re.search(r'Token="([^"]+)"', headers["Authorization"])
+    assert match, f"No token in {headers['Authorization']}"
+    return match.group(1)
 
 
 def wait_for_jellyfin(timeout=60):
@@ -27,29 +41,22 @@ def wait_for_jellyfin(timeout=60):
 
 
 def authenticate(username, password):
-    """Authenticate with Jellyfin and return auth headers."""
+    """Authenticate with Jellyfin and return auth headers.
+
+    Uses the modern ``Authorization: MediaBrowser`` scheme. Jellyfin 12 removed the
+    legacy ``X-Emby-Authorization`` header and the ``api_key`` query parameter, and
+    the modern scheme is also accepted by Jellyfin 10.11.
+    """
     r = requests.post(
         f"{JELLYFIN_URL}/Users/AuthenticateByName",
         json={"Username": username, "Pw": password},
-        headers={
-            "X-Emby-Authorization": (
-                'MediaBrowser Client="Integration Tests", '
-                'Device="pytest", DeviceId="test-device-001", '
-                'Version="1.0.0"'
-            )
-        },
+        headers={"Authorization": AUTH_SCHEME},
     )
     r.raise_for_status()
     data = r.json()
     token = data["AccessToken"]
     user_id = data["User"]["Id"]
-    return {
-        "X-Emby-Authorization": (
-            f'MediaBrowser Client="Integration Tests", '
-            f'Device="pytest", DeviceId="test-device-001", '
-            f'Version="1.0.0", Token="{token}"'
-        ),
-    }, user_id
+    return {"Authorization": f'{AUTH_SCHEME}, Token="{token}"'}, user_id
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -90,3 +97,12 @@ def sample_item_id(admin_session):
 @pytest.fixture(scope="session")
 def jellyfin_url():
     return JELLYFIN_URL
+
+
+@pytest.fixture(scope="session")
+def server_major_version(admin_session):
+    """Return the Jellyfin server major version as an int (e.g. 10 or 12)."""
+    headers, _ = admin_session
+    r = requests.get(f"{JELLYFIN_URL}/System/Info", headers=headers)
+    r.raise_for_status()
+    return int(r.json()["Version"].split(".")[0])

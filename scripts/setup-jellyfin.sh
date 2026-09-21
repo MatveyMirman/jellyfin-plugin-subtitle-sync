@@ -54,7 +54,7 @@ AUTH_HEADER='MediaBrowser Client="Setup", Device="script", DeviceId="setup-001",
 
 AUTH_RESULT=$(curl -sf -X POST "$JELLYFIN_URL/Users/AuthenticateByName" \
     -H "Content-Type: application/json" \
-    -H "X-Emby-Authorization: $AUTH_HEADER" \
+    -H "Authorization: $AUTH_HEADER" \
     -d '{"Username":"admin","Pw":"admin"}')
 
 TOKEN=$(echo "$AUTH_RESULT" | python3 -c "import sys, json; print(json.load(sys.stdin)['AccessToken'])" 2>/dev/null || echo "")
@@ -69,7 +69,7 @@ AUTH_WITH_TOKEN="MediaBrowser Client=\"Setup\", Device=\"script\", DeviceId=\"se
 # Create viewer user
 curl -sf -X POST "$JELLYFIN_URL/Users/New" \
     -H "Content-Type: application/json" \
-    -H "X-Emby-Authorization: $AUTH_WITH_TOKEN" \
+    -H "Authorization: $AUTH_WITH_TOKEN" \
     -d '{"Name":"viewer","Password":"viewer"}' || echo "Viewer user may already exist"
 
 echo ""

@@ -19,6 +19,12 @@
         window.ApiClient = {
             getCurrentUserId: function() { return 'mock-user-id'; },
             accessToken: function() { return 'mock-token'; },
+            appName: function() { return 'Jellyfin Web'; },
+            appVersion: function() { return '12.0.0'; },
+            deviceName: function() { return 'Dev Preview'; },
+            setRequestHeaders: function(headers) {
+                headers['Authorization'] = 'MediaBrowser Client="Jellyfin Web", Device="Dev Preview", DeviceId="mock-device", Version="12.0.0", Token="mock-token"';
+            },
             deviceId: function() { return 'mock-device'; },
             getUrl: function(path, params) {
                 var url = '/' + path;

@@ -616,6 +616,7 @@
                                     <video id="videoPlayer" controls playsinline preload="metadata"></video>
                                     <div class="subtitle-overlay" id="subtitleOverlay"></div>
                                 </div>
+                                <div id="playbackWarning" class="track-warning is-hidden"></div>
                             </div>
 
                             <div class="controls-panel panel-card">
@@ -741,6 +742,7 @@
                 elements.editorMeta = document.getElementById('editorMeta');
                 elements.videoPlayer = document.getElementById('videoPlayer');
                 elements.subtitleOverlay = document.getElementById('subtitleOverlay');
+                elements.playbackWarning = document.getElementById('playbackWarning');
                 elements.trackSelect = document.getElementById('trackSelect');
                 elements.trackWarning = document.getElementById('trackWarning');
                 elements.offsetInput = document.getElementById('offsetInput');
@@ -1120,31 +1122,105 @@
                 });
             }
 
+            /**
+             * Builds a Jellyfin `Authorization` header value.
+             *
+             * Jellyfin 12 removed every legacy authentication path (query-parameter tokens
+             * and the legacy Emby-prefixed token/authorization headers), so raw requests
+             * made outside of ApiClient (hls.js, XMLHttpRequest) must send the modern
+             * `MediaBrowser` scheme header themselves. Returns null when no token
+             * is known.
+             */
+            function getAuthorizationHeader() {
+                var api = window.ApiClient;
+                if (!api) {
+                    return null;
+                }
+
+                if (typeof api.setRequestHeaders === 'function') {
+                    var headers = {};
+                    try {
+                        api.setRequestHeaders(headers);
+                    } catch (e) {
+                        headers = {};
+                    }
+                    if (headers.Authorization) {
+                        return headers.Authorization;
+                    }
+                }
+
+                var token = typeof api.accessToken === 'function' ? api.accessToken() : null;
+                if (!token) {
+                    return null;
+                }
+
+                var parts = [];
+                [['Client', 'appName'], ['Device', 'deviceName'], ['DeviceId', 'deviceId'], ['Version', 'appVersion']].forEach(function (pair) {
+                    var value = typeof api[pair[1]] === 'function' ? api[pair[1]]() : null;
+                    if (value) {
+                        parts.push(pair[0] + '="' + String(value).replace(/"/g, '') + '"');
+                    }
+                });
+                parts.push('Token="' + token + '"');
+                return 'MediaBrowser ' + parts.join(', ');
+            }
+
+            function showPlaybackWarning(message) {
+                if (!elements.playbackWarning) {
+                    return;
+                }
+                elements.playbackWarning.textContent = message ? '⚠ ' + message : '';
+                elements.playbackWarning.classList.toggle('is-hidden', !message);
+            }
+
             function setupVideo(itemId, mediaSourceId, playSessionId) {
-                var url = ApiClient.getUrl('Videos/' + itemId + '/master.m3u8', {
+                var params = {
                     MediaSourceId: mediaSourceId,
                     VideoCodec: 'h264',
                     AudioCodec: 'aac',
                     MaxStreamingBitrate: 5000000,
-                    PlaySessionId: playSessionId,
-                    api_key: ApiClient.accessToken()
-                });
+                    PlaySessionId: playSessionId
+                };
+                var url = ApiClient.getUrl('Videos/' + itemId + '/master.m3u8', params);
+                var authHeader = getAuthorizationHeader();
 
                 destroyHls();
+                showPlaybackWarning('');
                 elements.videoPlayer.pause();
                 elements.videoPlayer.removeAttribute('src');
                 elements.videoPlayer.load();
 
                 if (window.Hls && window.Hls.isSupported()) {
-                    state.hls = new window.Hls();
+                    state.hls = new window.Hls({
+                        xhrSetup: function (xhr) {
+                            if (authHeader) {
+                                xhr.setRequestHeader('Authorization', authHeader);
+                            }
+                        }
+                    });
                     state.hls.loadSource(url);
                     state.hls.attachMedia(elements.videoPlayer);
                     state.hls.on(window.Hls.Events.ERROR, function (_event, data) {
-                        if (data && data.fatal) {
+                        if (!data || !data.fatal) {
+                            return;
+                        }
+                        if (data.response && data.response.code === 401) {
+                            showPlaybackWarning('Playback was rejected by the server (401). Sign in to Jellyfin again and reopen this editor.');
+                        } else {
+                            showPlaybackWarning('Playback failed: ' + (data.details || data.type || 'unknown error') + '.');
                         }
                     });
                 } else {
-                    elements.videoPlayer.src = url;
+                    // A <video> element cannot send custom headers, so this path falls back
+                    // to the legacy api_key query parameter. That only authenticates on
+                    // Jellyfin < 12; newer servers reject it and the video stays blank.
+                    var legacyParams = Object.keys(params).reduce(function (acc, key) {
+                        acc[key] = params[key];
+                        return acc;
+                    }, {});
+                    legacyParams.api_key = typeof ApiClient.accessToken === 'function' ? ApiClient.accessToken() : '';
+                    elements.videoPlayer.src = ApiClient.getUrl('Videos/' + itemId + '/master.m3u8', legacyParams);
+                    showPlaybackWarning('This browser has no Media Source Extensions support, so playback uses legacy query-parameter authentication. That is not supported on Jellyfin 12 or newer.');
                 }
             }
 
@@ -1274,9 +1350,13 @@
 
                 var xhr = new XMLHttpRequest();
                 state._waveformXhr = xhr;
-                var generateUrl = ApiClient.getUrl('SubtitleOffset/GenerateWaveform', { api_key: ApiClient.accessToken() });
+                var generateUrl = ApiClient.getUrl('SubtitleOffset/GenerateWaveform');
                 xhr.open('POST', generateUrl);
                 xhr.setRequestHeader('Content-Type', 'application/json');
+                var waveformAuthHeader = getAuthorizationHeader();
+                if (waveformAuthHeader) {
+                    xhr.setRequestHeader('Authorization', waveformAuthHeader);
+                }
                 xhr.onprogress = function (event) {
                     if (event.lengthComputable && event.total > 0) {
                         var pct = Math.min(99, (event.loaded / event.total) * 100);
@@ -1741,6 +1821,7 @@
                 elements.subtitleOverlay.textContent = '';
                 elements.trackWarning.classList.add('is-hidden');
                 elements.trackWarning.textContent = '';
+                showPlaybackWarning('');
                 populateTrackOptions([]);
                 updateWaveformUi();
                 syncOffsetUi();

@@ -3,6 +3,18 @@
 DOTNET_ROOT ?= /opt/homebrew/opt/dotnet@9/libexec
 export PATH := $(DOTNET_ROOT):$(PATH)
 
+# Jellyfin server image tag used by the dev environment.
+# `make up` uses 12.0; `make up 10.11.10` pins any other published tag.
+JELLYFIN_VERSION ?= 12.0
+ifeq (up,$(firstword $(MAKECMDGOALS)))
+JELLYFIN_VERSION_ARG := $(word 2,$(MAKECMDGOALS))
+ifneq ($(JELLYFIN_VERSION_ARG),)
+JELLYFIN_VERSION := $(JELLYFIN_VERSION_ARG)
+$(eval $(JELLYFIN_VERSION_ARG):;@:)
+endif
+endif
+export JELLYFIN_VERSION
+
 # Build the plugin
 build:
 	cd src/Jellyfin.Plugin.SubtitleOffset && dotnet build -c Release -o ../../build/plugin
@@ -25,11 +37,11 @@ generate-video:
 # Start the dev environment
 up: build generate-video
 	docker compose up -d
-	@echo "Waiting for Jellyfin to start..."
+	@echo "Waiting for Jellyfin $(JELLYFIN_VERSION) to start..."
 	@sleep 10
 	bash scripts/setup-jellyfin.sh
 	@echo ""
-	@echo "✅ Dev environment ready!"
+	@echo "✅ Dev environment ready! (Jellyfin $(JELLYFIN_VERSION))"
 	@echo "   Jellyfin: http://localhost:8096"
 	@echo "   Admin:    admin / admin"
 	@echo "   Viewer:   viewer / viewer"

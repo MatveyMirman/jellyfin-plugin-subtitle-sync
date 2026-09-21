@@ -27,7 +27,7 @@ Admin opens Plugin Settings → Subtitle Sync
 
 ## Requirements
 
-- **Jellyfin Server 10.11+** (minimum requirement)
+- **Jellyfin Server 10.11+** (minimum requirement, including 12.x)
 - .NET 9.0 SDK (for building)
 - Docker & Docker Compose (for local development)
 - ffmpeg (for generating sample video and waveform data)
@@ -115,10 +115,16 @@ dotnet build -c Release -o ../../build/plugin
 make up
 ```
 
+To test against a different server release, pass the image tag as an argument:
+
+```bash
+make up 10.11.10
+```
+
 This will:
 1. Build the plugin
 2. Generate a sample test video (requires ffmpeg)
-3. Start Jellyfin 10.11.10 via Docker Compose
+3. Start Jellyfin 12.0 via Docker Compose
 4. Run initial setup (create admin/viewer users, add library)
 
 Access Jellyfin at **http://localhost:8096**
@@ -145,7 +151,7 @@ make build        # Build the plugin DLL
 make test-unit    # Run xUnit unit tests
 make test-int     # Run pytest integration tests (requires running Jellyfin)
 make test         # Run all tests
-make up           # Start dev environment
+make up           # Start dev environment (Jellyfin 12.0; `make up 10.11.10` pins a tag)
 make down         # Stop dev environment
 make clean        # Tear down everything + remove generated files
 ```
@@ -158,7 +164,7 @@ make clean        # Tear down everything + remove generated files
 ├── dev-preview.html                 # Standalone UI preview (no Jellyfin needed)
 ├── manifest.json                    # Jellyfin plugin repository manifest
 ├── Makefile                         # Common commands
-├── docker-compose.yml               # Dev environment (Jellyfin 10.11.10)
+├── docker-compose.yml               # Dev environment (Jellyfin 12.0 by default)
 ├── .github/workflows/
 │   ├── ci.yml                       # Build + test on push/PR
 │   └── release.yml                  # Build, package, and publish on tag
@@ -253,7 +259,30 @@ Cancels in-progress waveform generation.
 | Jellyfin Version | Supported |
 |-----------------|-----------|
 | < 10.11 | ❌ Not supported |
-| 10.11+ | ✅ Full support |
+| 10.11.x | ✅ Full support |
+| 12.x | ✅ Full support |
+
+### Authentication
+
+Jellyfin 12 removed all legacy authentication paths — the `api_key` query
+parameter, the `X-Emby-Token`/`X-MediaBrowser-Token` headers, and the
+`X-Emby-Authorization` header. The only accepted scheme is:
+
+```
+Authorization: MediaBrowser Client="...", Device="...", DeviceId="...", Version="...", Token="..."
+```
+
+Jellyfin 10.11 also accepts this scheme, so the plugin uses it exclusively:
+
+- Preview playback builds the HLS URL without `api_key` and attaches the
+  `Authorization` header to every hls.js manifest and segment request via `xhrSetup`.
+- Waveform generation sends the header on its `XMLHttpRequest` instead of a query parameter.
+- All other calls go through `ApiClient`, which sets the header itself.
+
+**Known limitation:** browsers without Media Source Extensions fall back to a
+plain `<video>` element, which cannot send custom headers. That path still uses
+the `api_key` query parameter and therefore only works on Jellyfin 10.11; the
+editor shows a warning when it is used. Every current browser supports MSE.
 
 ## License
 

@@ -1,6 +1,6 @@
 services:
   jellyfin:
-    image: jellyfin/jellyfin:10.11.10
+    image: jellyfin/jellyfin:${JELLYFIN_VERSION:-12.0}
     container_name: jellyfin-subtitle-offset-dev
     ports:
       - "8096:8096"
