@@ -123,9 +123,27 @@ public class OffsetFileService
     /// Generates a new .srt file with the given offset applied.
     /// Returns the generated filename and display track name.
     /// </summary>
-    public GenerateResult Generate(Guid itemId, int subtitleStreamIndex, long offsetMs)
+    /// <param name="itemId">The video item ID.</param>
+    /// <param name="subtitleStreamIndex">The subtitle stream index.</param>
+    /// <param name="offsetMs">The uniform offset in milliseconds.</param>
+    /// <param name="timings">
+    /// Optional explicit per-entry timings. When supplied these replace the uniform
+    /// offset, allowing non-uniform edits (ripple shifts and per-cue durations) that
+    /// cannot be represented by a single offset value.
+    /// </param>
+    /// <param name="fileName">Optional custom file name for the generated file.</param>
+    public GenerateResult Generate(
+        Guid itemId,
+        int subtitleStreamIndex,
+        long offsetMs,
+        IReadOnlyList<SubtitleTimingDto>? timings = null,
+        string? fileName = null)
     {
-        ValidateOffsetRange(offsetMs);
+        var hasExplicitTimings = timings is { Count: > 0 };
+        if (!hasExplicitTimings)
+        {
+            ValidateOffsetRange(offsetMs);
+        }
 
         var (item, _, subtitlePath, videoDir, videoBaseName, lang) = ResolveSubtitleContext(itemId, subtitleStreamIndex);
         var originalSubtitlePath = IsOffsetFile(subtitlePath)
@@ -133,6 +151,38 @@ public class OffsetFileService
             : subtitlePath;
 
         var (entries, encoding) = ReadSubtitleEntries(originalSubtitlePath);
+
+        if (hasExplicitTimings)
+        {
+            ApplyExplicitTimings(entries, timings!);
+
+            var resyncFileName = string.IsNullOrWhiteSpace(fileName)
+                ? $"{videoBaseName}.{lang}.Resync.srt"
+                : SanitizeFileName(fileName!);
+            var resyncFilePath = Path.Combine(videoDir, resyncFileName);
+
+            if (PathsEqual(resyncFilePath, originalSubtitlePath))
+            {
+                throw new InvalidOperationException(
+                    "The chosen file name matches the original subtitle. Use Replace Original instead.");
+            }
+
+            WriteSubtitleEntries(resyncFilePath, entries, encoding);
+
+            _logger.LogInformation(
+                "Generated resynced subtitle from original {OriginalPath}: {Path}",
+                originalSubtitlePath,
+                resyncFilePath);
+
+            RefreshItem(item);
+
+            return new GenerateResult
+            {
+                GeneratedFile = resyncFileName,
+                TrackName = $"{GetLanguageDisplayName(lang)} (resynced)",
+                Deleted = false
+            };
+        }
 
         DeleteExistingOffsetFiles(videoDir, videoBaseName, lang);
 
@@ -150,8 +200,16 @@ public class OffsetFileService
         SrtParser.ApplyOffset(entries, offsetMs);
 
         var offsetLabel = BuildOffsetLabel(offsetMs);
-        var newFileName = $"{videoBaseName}.{lang}.{offsetLabel}.srt";
+        var newFileName = string.IsNullOrWhiteSpace(fileName)
+            ? $"{videoBaseName}.{lang}.{offsetLabel}.srt"
+            : SanitizeFileName(fileName!);
         var newFilePath = Path.Combine(videoDir, newFileName);
+
+        if (PathsEqual(newFilePath, originalSubtitlePath))
+        {
+            throw new InvalidOperationException(
+                "The chosen file name matches the original subtitle. Use Replace Original instead.");
+        }
 
         WriteSubtitleEntries(newFilePath, entries, encoding);
 
@@ -170,9 +228,21 @@ public class OffsetFileService
     /// <summary>
     /// Replaces the original subtitle file with content adjusted by the specified offset.
     /// </summary>
-    public ReplaceResult ReplaceOriginal(Guid itemId, int subtitleStreamIndex, long offsetMs)
+    /// <param name="itemId">The video item ID.</param>
+    /// <param name="subtitleStreamIndex">The subtitle stream index.</param>
+    /// <param name="offsetMs">The uniform offset in milliseconds.</param>
+    /// <param name="timings">Optional explicit per-entry timings, replacing the uniform offset.</param>
+    public ReplaceResult ReplaceOriginal(
+        Guid itemId,
+        int subtitleStreamIndex,
+        long offsetMs,
+        IReadOnlyList<SubtitleTimingDto>? timings = null)
     {
-        ValidateOffsetRange(offsetMs);
+        var hasExplicitTimings = timings is { Count: > 0 };
+        if (!hasExplicitTimings)
+        {
+            ValidateOffsetRange(offsetMs);
+        }
 
         var (item, _, subtitlePath, videoDir, videoBaseName, lang) = ResolveSubtitleContext(itemId, subtitleStreamIndex);
         var originalSubtitlePath = IsOffsetFile(subtitlePath)
@@ -180,7 +250,16 @@ public class OffsetFileService
             : subtitlePath;
 
         var (entries, encoding) = ReadSubtitleEntries(originalSubtitlePath);
-        SrtParser.ApplyOffset(entries, offsetMs);
+
+        if (hasExplicitTimings)
+        {
+            ApplyExplicitTimings(entries, timings!);
+        }
+        else
+        {
+            SrtParser.ApplyOffset(entries, offsetMs);
+        }
+
         WriteSubtitleEntries(originalSubtitlePath, entries, encoding);
 
         DeleteExistingOffsetFiles(videoDir, videoBaseName, lang);
@@ -192,7 +271,7 @@ public class OffsetFileService
         return new ReplaceResult
         {
             ReplacedFile = Path.GetFileName(originalSubtitlePath),
-            OffsetApplied = offsetMs
+            OffsetApplied = hasExplicitTimings ? 0 : offsetMs
         };
     }
 
@@ -218,8 +297,9 @@ public class OffsetFileService
             Language = lang,
             IsOffsetFile = isOffsetFile,
             ExistingOffsetMs = existingOffsetMs,
-            Entries = entries.Select(entry => new SubtitleEntryDto
+            Entries = entries.Select((entry, ordinal) => new SubtitleEntryDto
             {
+                Ordinal = ordinal,
                 Index = entry.SequenceNumber,
                 StartMs = (long)entry.StartTime.TotalMilliseconds,
                 EndMs = (long)entry.EndTime.TotalMilliseconds,
@@ -291,6 +371,87 @@ public class OffsetFileService
     {
         var srtContent = SrtWriter.Write(entries);
         File.WriteAllText(subtitlePath, srtContent, encoding);
+    }
+
+    /// <summary>
+    /// Applies explicit per-entry timings, matched by their zero-based position in the
+    /// freshly parsed original file. This supports non-uniform edits (ripple shifts and
+    /// per-cue duration changes) which a single offset value cannot express.
+    /// Entries without a supplied timing keep their original times.
+    /// </summary>
+    internal static void ApplyExplicitTimings(List<SrtEntry> entries, IReadOnlyList<SubtitleTimingDto> timings)
+    {
+        var maxOffset = Plugin.Instance?.Configuration?.MaxOffsetMs ?? 600_000;
+        var seen = new HashSet<int>();
+
+        foreach (var timing in timings)
+        {
+            if (timing.Ordinal < 0 || timing.Ordinal >= entries.Count)
+            {
+                throw new ArgumentException(
+                    $"Subtitle entry position {timing.Ordinal} is out of range; the original file has {entries.Count} entries.");
+            }
+
+            if (!seen.Add(timing.Ordinal))
+            {
+                throw new ArgumentException($"Duplicate timing supplied for subtitle entry {timing.Ordinal}.");
+            }
+
+            if (timing.StartMs < 0)
+            {
+                throw new ArgumentException($"Subtitle entry {timing.Ordinal} has a negative start time.");
+            }
+
+            if (timing.EndMs <= timing.StartMs)
+            {
+                throw new ArgumentException($"Subtitle entry {timing.Ordinal} must end after it starts.");
+            }
+
+            var entry = entries[timing.Ordinal];
+            var startShift = timing.StartMs - (long)entry.StartTime.TotalMilliseconds;
+            var endShift = timing.EndMs - (long)entry.EndTime.TotalMilliseconds;
+
+            if (Math.Abs(startShift) > maxOffset || Math.Abs(endShift) > maxOffset)
+            {
+                throw new ArgumentException($"Subtitle entry {timing.Ordinal} exceeds the maximum allowed shift of {maxOffset}ms.");
+            }
+
+            entry.StartTime = TimeSpan.FromMilliseconds(timing.StartMs);
+            entry.EndTime = TimeSpan.FromMilliseconds(timing.EndMs);
+        }
+    }
+
+    /// <summary>
+    /// Reduces a user-supplied name to a bare .srt file name, rejecting path traversal.
+    /// </summary>
+    internal static string SanitizeFileName(string fileName)
+    {
+        var name = Path.GetFileName(fileName.Trim());
+
+        if (string.IsNullOrWhiteSpace(name) || name is "." or "..")
+        {
+            throw new ArgumentException("File name is not valid.");
+        }
+
+        if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            throw new ArgumentException("File name contains invalid characters.");
+        }
+
+        if (!name.EndsWith(".srt", StringComparison.OrdinalIgnoreCase))
+        {
+            name += ".srt";
+        }
+
+        return name;
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildOffsetLabel(long offsetMs)
@@ -463,10 +624,36 @@ public class SubtitleContentResult
 }
 
 /// <summary>
+/// Explicit timing for a single subtitle entry, used for non-uniform edits.
+/// </summary>
+public class SubtitleTimingDto
+{
+    /// <summary>
+    /// Gets or sets the zero-based position of the entry in the original subtitle file.
+    /// </summary>
+    public int Ordinal { get; set; }
+
+    /// <summary>
+    /// Gets or sets the new start time in milliseconds.
+    /// </summary>
+    public long StartMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets the new end time in milliseconds.
+    /// </summary>
+    public long EndMs { get; set; }
+}
+
+/// <summary>
 /// DTO for subtitle entry content.
 /// </summary>
 public class SubtitleEntryDto
 {
+    /// <summary>
+    /// Gets or sets the zero-based position of the entry in the original subtitle file.
+    /// </summary>
+    public int Ordinal { get; set; }
+
     /// <summary>
     /// Gets or sets the subtitle index.
     /// </summary>

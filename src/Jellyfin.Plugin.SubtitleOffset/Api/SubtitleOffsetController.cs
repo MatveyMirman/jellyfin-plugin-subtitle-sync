@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Mime;
@@ -81,7 +82,12 @@ public class SubtitleOffsetController : ControllerBase
 
         try
         {
-            var result = _offsetService.Generate(request.ItemId, request.SubtitleStreamIndex, request.OffsetMs);
+            var result = _offsetService.Generate(
+                request.ItemId,
+                request.SubtitleStreamIndex,
+                request.OffsetMs,
+                request.Entries,
+                request.FileName);
 
             if (result.Deleted)
             {
@@ -138,7 +144,11 @@ public class SubtitleOffsetController : ControllerBase
 
         try
         {
-            var result = _offsetService.ReplaceOriginal(request.ItemId, request.SubtitleStreamIndex, request.OffsetMs);
+            var result = _offsetService.ReplaceOriginal(
+                request.ItemId,
+                request.SubtitleStreamIndex,
+                request.OffsetMs,
+                request.Entries);
 
             return Ok(new
             {
@@ -310,6 +320,18 @@ public class GenerateRequest
     /// Gets or sets the offset in milliseconds.
     /// </summary>
     public long OffsetMs { get; set; }
+
+    /// <summary>
+    /// Gets or sets optional explicit per-entry timings. When supplied these take
+    /// precedence over <see cref="OffsetMs"/> and allow non-uniform edits such as
+    /// ripple shifts and per-cue duration changes.
+    /// </summary>
+    public List<SubtitleTimingDto>? Entries { get; set; }
+
+    /// <summary>
+    /// Gets or sets an optional custom file name for the generated subtitle file.
+    /// </summary>
+    public string? FileName { get; set; }
 }
 
 /// <summary>

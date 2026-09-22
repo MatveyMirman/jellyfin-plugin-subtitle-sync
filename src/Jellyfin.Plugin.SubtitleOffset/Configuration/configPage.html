@@ -645,6 +645,15 @@
                                     </div>
                                 </div>
 
+                                <div class="field-group">
+                                    <div class="field-label">Edit mode</div>
+                                    <div class="offset-row">
+                                        <button type="button" id="rippleModeButton" class="button-secondary">Ripple: Off</button>
+                                        <button type="button" id="revertEditsButton" class="button-secondary is-hidden">Revert cue edits</button>
+                                    </div>
+                                    <div class="field-help" id="rippleModeHelp">Ripple off: dragging a cue shifts the whole track. Ripple on: dragging a cue moves it and every later cue, leaving earlier cues untouched. Drag a cue edge to change its duration.</div>
+                                </div>
+
                                 <div class="action-buttons">
                                     <button type="button" id="saveOffsetButton" class="button-primary">Save as Offset File</button>
                                     <button type="button" id="replaceOriginalButton" class="button-danger">Replace Original</button>
@@ -657,7 +666,7 @@
                                 <div class="timeline-toolbar">
                                     <div>
                                         <div class="field-label" style="margin-bottom: 0.2rem;">Timeline</div>
-                                        <div class="timeline-hint">Wheel to zoom, drag empty space to pan, drag cue bars to offset, click to seek.</div>
+                                        <div class="timeline-hint">Wheel to zoom, drag empty space to pan, drag cue bars to offset, drag cue edges to resize, click to seek.</div>
                                     </div>
                                     <div class="waveform-actions">
                                         <button type="button" id="generateWaveformButton" class="button-secondary">Generate Waveform</button>
@@ -696,6 +705,9 @@
                 currentOffsetMs: 0,
                 savedOffsetMs: 0,
                 subtitleEntries: [],
+                originalEntries: [],
+                rippleMode: false,
+                hasEntryEdits: false,
                 waveformData: null,
                 timelineZoom: 1,
                 timelineOffset: 0,
@@ -748,6 +760,8 @@
                 elements.offsetInput = document.getElementById('offsetInput');
                 elements.savedBadge = document.getElementById('savedBadge');
                 elements.offsetButtons = document.getElementById('offsetButtons');
+                elements.rippleModeButton = document.getElementById('rippleModeButton');
+                elements.revertEditsButton = document.getElementById('revertEditsButton');
                 elements.saveOffsetButton = document.getElementById('saveOffsetButton');
                 elements.replaceOriginalButton = document.getElementById('replaceOriginalButton');
                 elements.timelineCanvas = document.getElementById('timelineCanvas');
@@ -820,6 +834,16 @@
 
                 elements.cancelWaveformButton.addEventListener('click', function () {
                     cancelWaveformGeneration();
+                });
+
+                elements.rippleModeButton.addEventListener('click', function () {
+                    state.rippleMode = !state.rippleMode;
+                    syncOffsetUi();
+                    drawTimeline();
+                });
+
+                elements.revertEditsButton.addEventListener('click', function () {
+                    revertEntryEdits();
                 });
 
                 elements.saveOffsetButton.addEventListener('click', function () {
@@ -1079,6 +1103,8 @@
                 return ApiClient.getJSON(ApiClient.getUrl('SubtitleOffset/SubtitleContent/' + state.currentItemId + '/' + streamIndex)).then(function (response) {
                     var entries = normalizeSubtitleEntries(response);
                     state.subtitleEntries = entries;
+                    state.originalEntries = snapshotEntries(entries);
+                    state.hasEntryEdits = false;
                     state.currentStreamIndex = streamIndex;
                     var selectedTrack = findTrack(streamIndex);
                     state.currentTrackLabel = selectedTrack ? selectedTrack.label : '';
@@ -1096,6 +1122,8 @@
                     elements.trackWarning.textContent = '⚠ This subtitle file (' + trackName + ') could not be parsed. It may be malformed or corrupted.';
                     elements.trackWarning.classList.remove('is-hidden');
                     state.subtitleEntries = [];
+                    state.originalEntries = [];
+                    state.hasEntryEdits = false;
                     state.currentStreamIndex = streamIndex;
                     elements.trackSelect.value = String(streamIndex);
                     refreshCueDisplay();
@@ -1109,8 +1137,12 @@
                 if (response) {
                     rawEntries = response.Entries || response.entries || response.subtitleEntries || response.Items || [];
                 }
-                return rawEntries.map(function (entry) {
+                return rawEntries.map(function (entry, position) {
+                    var ordinal = entry.ordinal !== undefined ? entry.ordinal : entry.Ordinal;
                     return {
+                        // Zero-based position in the original file; the backend matches
+                        // edits back to entries by this value.
+                        ordinal: Number(ordinal !== undefined ? ordinal : position) || 0,
                         startMs: Number(entry.startMs !== undefined ? entry.startMs : entry.StartMs || entry.start || 0) || 0,
                         endMs: Number(entry.endMs !== undefined ? entry.endMs : entry.EndMs || entry.end || 0) || 0,
                         text: entry.text !== undefined ? String(entry.text) : String(entry.Text || '')
@@ -1120,6 +1152,105 @@
                 }).sort(function (a, b) {
                     return a.startMs - b.startMs;
                 });
+            }
+
+            function snapshotEntries(entries) {
+                return entries.map(function (entry) {
+                    return { ordinal: entry.ordinal, startMs: entry.startMs, endMs: entry.endMs, text: entry.text };
+                });
+            }
+
+            /**
+             * True when any cue has been moved or resized relative to the pristine file.
+             * Such edits are non-uniform and cannot be expressed as a single offset.
+             */
+            function recomputeEntryEdits() {
+                var edited = false;
+                for (var i = 0; i < state.subtitleEntries.length; i += 1) {
+                    var current = state.subtitleEntries[i];
+                    var original = state.originalEntries[i];
+                    if (!original || current.startMs !== original.startMs || current.endMs !== original.endMs) {
+                        edited = true;
+                        break;
+                    }
+                }
+                state.hasEntryEdits = edited;
+                return edited;
+            }
+
+            function buildEntryTimings() {
+                return state.subtitleEntries.map(function (entry) {
+                    return {
+                        ordinal: entry.ordinal,
+                        startMs: Math.max(0, Math.round(entry.startMs + state.currentOffsetMs)),
+                        endMs: Math.max(1, Math.round(entry.endMs + state.currentOffsetMs))
+                    };
+                });
+            }
+
+            function revertEntryEdits() {
+                state.subtitleEntries = snapshotEntries(state.originalEntries);
+                state.hasEntryEdits = false;
+                state.lastCueIndex = 0;
+                refreshCueDisplay();
+                drawTimeline();
+                syncOffsetUi();
+            }
+
+            /**
+             * Shifts a cue and, in ripple mode, every later cue by the same delta.
+             * Earlier cues are always left untouched.
+             */
+            function applyRippleShift(fromIndex, deltaMs) {
+                var baseline = state.drag && state.drag.baseline ? state.drag.baseline : state.originalEntries;
+                for (var i = fromIndex; i < state.subtitleEntries.length; i += 1) {
+                    var origin = baseline[i];
+                    if (!origin) {
+                        continue;
+                    }
+                    var shifted = Math.max(0, origin.startMs + deltaMs);
+                    var width = origin.endMs - origin.startMs;
+                    state.subtitleEntries[i].startMs = shifted;
+                    state.subtitleEntries[i].endMs = shifted + width;
+                }
+                recomputeEntryEdits();
+            }
+
+            /**
+             * Resizes a single cue by moving one of its edges. In ripple mode the change
+             * in length also shifts every later cue so gaps are preserved.
+             */
+            function applyEdgeResize(index, edge, deltaMs, ripple) {
+                var baseline = state.drag && state.drag.baseline ? state.drag.baseline : state.originalEntries;
+                var origin = baseline[index];
+                if (!origin) {
+                    return;
+                }
+                var minDuration = 100;
+                var entry = state.subtitleEntries[index];
+
+                if (edge === 'start') {
+                    var newStart = clamp(origin.startMs + deltaMs, 0, origin.endMs - minDuration);
+                    entry.startMs = newStart;
+                    entry.endMs = origin.endMs;
+                } else {
+                    var newEnd = Math.max(origin.startMs + minDuration, origin.endMs + deltaMs);
+                    entry.startMs = origin.startMs;
+                    entry.endMs = newEnd;
+                    if (ripple) {
+                        var tailShift = newEnd - origin.endMs;
+                        for (var i = index + 1; i < state.subtitleEntries.length; i += 1) {
+                            var laterOrigin = baseline[i];
+                            if (!laterOrigin) {
+                                continue;
+                            }
+                            var shifted = Math.max(0, laterOrigin.startMs + tailShift);
+                            state.subtitleEntries[i].startMs = shifted;
+                            state.subtitleEntries[i].endMs = shifted + (laterOrigin.endMs - laterOrigin.startMs);
+                        }
+                    }
+                }
+                recomputeEntryEdits();
             }
 
             /**
@@ -1287,8 +1418,22 @@
             function syncOffsetUi() {
                 elements.offsetInput.value = String(state.currentOffsetMs || 0);
                 elements.timelineOffsetLabel.textContent = 'Offset: ' + formatSignedMs(state.currentOffsetMs || 0);
-                var showSaved = state.currentStreamIndex !== null && state.currentOffsetMs === state.savedOffsetMs;
+                var showSaved = state.currentStreamIndex !== null && state.currentOffsetMs === state.savedOffsetMs && !state.hasEntryEdits;
                 elements.savedBadge.classList.toggle('is-hidden', !showSaved);
+
+                if (elements.rippleModeButton) {
+                    elements.rippleModeButton.textContent = 'Ripple: ' + (state.rippleMode ? 'On' : 'Off');
+                    elements.rippleModeButton.classList.toggle('button-primary', state.rippleMode);
+                    elements.rippleModeButton.classList.toggle('button-secondary', !state.rippleMode);
+                }
+
+                if (elements.revertEditsButton) {
+                    elements.revertEditsButton.classList.toggle('is-hidden', !state.hasEntryEdits);
+                }
+
+                if (elements.saveOffsetButton) {
+                    elements.saveOffsetButton.textContent = state.hasEntryEdits ? 'Save as New File' : 'Save as Offset File';
+                }
             }
 
             function loadWaveform(itemId) {
@@ -1421,26 +1566,58 @@
                 }
             }
 
+            function suggestResyncFileName() {
+                var track = findTrack(state.currentStreamIndex);
+                var base = track && track.filename ? extractFileName(track.filename) : 'subtitles.srt';
+                return base.replace(/\.srt$/i, '') + '.Resync.srt';
+            }
+
             function saveOffsetFile() {
                 if (state.currentItemId === null || state.currentStreamIndex === null) {
                     return;
                 }
+
+                var payload = {
+                    itemId: state.currentItemId,
+                    subtitleStreamIndex: state.currentStreamIndex,
+                    offsetMs: state.currentOffsetMs
+                };
+
+                // Non-uniform edits cannot be encoded in the .Offset+1234ms filename, so
+                // send explicit per-entry timings and let the admin name the new file.
+                if (state.hasEntryEdits) {
+                    var chosenName = window.prompt(
+                        'Save the edited subtitles as a new file.\nEnter a file name (.srt):',
+                        suggestResyncFileName());
+                    if (chosenName === null) {
+                        return;
+                    }
+                    chosenName = chosenName.trim();
+                    if (!chosenName) {
+                        window.alert('A file name is required.');
+                        return;
+                    }
+                    payload.entries = buildEntryTimings();
+                    payload.fileName = chosenName;
+                }
+
                 runButtonAction(elements.saveOffsetButton, 'Saving…', function () {
                     return ApiClient.ajax({
                         type: 'POST',
                         url: ApiClient.getUrl('SubtitleOffset/Generate'),
-                        data: JSON.stringify({
-                            itemId: state.currentItemId,
-                            subtitleStreamIndex: state.currentStreamIndex,
-                            offsetMs: state.currentOffsetMs
-                        }),
+                        data: JSON.stringify(payload),
                         contentType: 'application/json'
-                    }).then(function (response) {
+                    }).then(function () {
+                        if (state.hasEntryEdits) {
+                            // The edits are now baked into a file on disk.
+                            state.originalEntries = snapshotEntries(state.subtitleEntries);
+                            state.hasEntryEdits = false;
+                        }
                         state.savedOffsetMs = state.currentOffsetMs;
                         syncOffsetUi();
-                        var filename = response && response.generatedFile ? extractFileName(response.generatedFile) : 'Offset file saved';
+                        drawTimeline();
                     });
-                }, 'Save as Offset File');
+                }, state.hasEntryEdits ? 'Save as New File' : 'Save as Offset File');
             }
 
             function replaceOriginalFile() {
@@ -1454,18 +1631,23 @@
                     return;
                 }
                 runButtonAction(elements.replaceOriginalButton, 'Replacing…', function () {
+                    var payload = {
+                        itemId: state.currentItemId,
+                        subtitleStreamIndex: state.currentStreamIndex,
+                        offsetMs: state.currentOffsetMs
+                    };
+                    if (state.hasEntryEdits) {
+                        payload.entries = buildEntryTimings();
+                    }
                     return ApiClient.ajax({
                         type: 'POST',
                         url: ApiClient.getUrl('SubtitleOffset/ReplaceOriginal'),
-                        data: JSON.stringify({
-                            itemId: state.currentItemId,
-                            subtitleStreamIndex: state.currentStreamIndex,
-                            offsetMs: state.currentOffsetMs
-                        }),
+                        data: JSON.stringify(payload),
                         contentType: 'application/json'
                     }).then(function () {
                         state.currentOffsetMs = 0;
                         state.savedOffsetMs = 0;
+                        state.hasEntryEdits = false;
                         syncOffsetUi();
                         return loadSubtitleTrack(state.currentStreamIndex, false).catch(function () {
                             refreshCueDisplay();
@@ -1521,11 +1703,25 @@
                         return;
                     }
                     var rect = canvas.getBoundingClientRect();
-                    console.log("Rect:", rect);
                     var x = event.clientX - rect.left;
                     var y = event.clientY - rect.top;
-                    var hitCue = hitTestCue(x, y, rect.width, rect.height);
-                    if (hitCue) {
+                    var hit = hitTestCue(x, y, rect.width, rect.height);
+                    if (hit && hit.edge) {
+                        state.drag = {
+                            mode: 'resize',
+                            edge: hit.edge,
+                            index: hit.index,
+                            startX: x,
+                            baseline: snapshotEntries(state.subtitleEntries)
+                        };
+                    } else if (hit && state.rippleMode) {
+                        state.drag = {
+                            mode: 'ripple',
+                            index: hit.index,
+                            startX: x,
+                            baseline: snapshotEntries(state.subtitleEntries)
+                        };
+                    } else if (hit) {
                         state.drag = {
                             mode: 'cue',
                             startX: x,
@@ -1542,6 +1738,15 @@
                     }
                 });
 
+                canvas.addEventListener('mousemove', function (event) {
+                    if (state.drag || !state.subtitleEntries.length) {
+                        return;
+                    }
+                    var rect = canvas.getBoundingClientRect();
+                    var hovered = hitTestCue(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height);
+                    canvas.style.cursor = hovered ? (hovered.edge ? 'ew-resize' : 'grab') : 'default';
+                });
+
                 window.addEventListener('mousemove', function (event) {
                     if (!state.drag) {
                         return;
@@ -1549,13 +1754,33 @@
                     var rect = canvas.getBoundingClientRect();
                     var x = event.clientX - rect.left;
                     var deltaX = x - state.drag.startX;
+                    var duration = getVisibleDurationMs();
                     if (state.drag.mode === 'cue') {
-                        var duration = getVisibleDurationMs();
                         if (!duration || !rect.width) {
                             return;
                         }
                         var deltaMs = snapToHundreds((deltaX / rect.width) * duration);
                         setOffset(state.drag.startOffsetMs + deltaMs, 1000);
+                    } else if (state.drag.mode === 'ripple') {
+                        if (!duration || !rect.width) {
+                            return;
+                        }
+                        applyRippleShift(state.drag.index, snapToHundreds((deltaX / rect.width) * duration));
+                        refreshCueDisplay();
+                        drawTimeline();
+                        syncOffsetUi();
+                    } else if (state.drag.mode === 'resize') {
+                        if (!duration || !rect.width) {
+                            return;
+                        }
+                        applyEdgeResize(
+                            state.drag.index,
+                            state.drag.edge,
+                            snapToHundreds((deltaX / rect.width) * duration),
+                            state.rippleMode);
+                        refreshCueDisplay();
+                        drawTimeline();
+                        syncOffsetUi();
                     } else if (state.drag.mode === 'pan' && state.timelineZoom > 1) {
                         var movedMs = (deltaX / state.drag.width) * getVisibleDurationMs();
                         state.timelineOffset = clamp(state.drag.startOffset - movedMs, 0, Math.max(0, getDurationMs() - getVisibleDurationMs()));
@@ -1600,6 +1825,7 @@
                 }
                 var viewportStart = state.timelineOffset;
                 var viewportEnd = viewportStart + getVisibleDurationMs();
+                var edgeGrabPx = 6 * dpr;
                 for (var i = 0; i < state.subtitleEntries.length; i += 1) {
                     var cue = state.subtitleEntries[i];
                     var cueStart = cue.startMs + state.currentOffsetMs;
@@ -1609,8 +1835,19 @@
                     }
                     var left = timeToX(cueStart, width);
                     var right = Math.max(left + 2, timeToX(cueEnd, width));
-                    if (x >= left && x <= right) {
-                        return cue;
+                    if (x >= left - edgeGrabPx && x <= right + edgeGrabPx) {
+                        // Only offer edge resizing when the bar is wide enough that the
+                        // edge zones don't swallow the whole cue.
+                        var canResize = (right - left) > (edgeGrabPx * 3);
+                        var edge = null;
+                        if (canResize && x <= left + edgeGrabPx) {
+                            edge = 'start';
+                        } else if (canResize && x >= right - edgeGrabPx) {
+                            edge = 'end';
+                        } else if (x < left || x > right) {
+                            continue;
+                        }
+                        return { cue: cue, index: i, edge: edge };
                     }
                 }
                 return null;
@@ -1693,7 +1930,8 @@
             }
 
             function drawCueBars(ctx, width, height, viewportStart, viewportEnd) {
-                ctx.fillStyle = getCssVariable('--cue-bar') || 'rgba(66, 135, 245, 0.6)';
+                var defaultColor = getCssVariable('--cue-bar') || 'rgba(66, 135, 245, 0.6)';
+                var editedColor = 'rgba(255, 176, 32, 0.75)';
                 var fullBarHeight = Math.max(26, height - 76);
                 var barHeight = Math.round(fullBarHeight * 0.75);
                 var top = 98 + Math.round((fullBarHeight - barHeight) / 2);
@@ -1704,6 +1942,9 @@
                     if (cueEnd < viewportStart || cueStart > viewportEnd) {
                         continue;
                     }
+                    var original = state.originalEntries[i];
+                    var isEdited = !!original && (original.startMs !== cue.startMs || original.endMs !== cue.endMs);
+                    ctx.fillStyle = isEdited ? editedColor : defaultColor;
                     var x = timeToX(cueStart, width);
                     var endX = timeToX(cueEnd, width);
                     ctx.fillRect(x, top, Math.max(2, endX - x), barHeight);
@@ -1818,6 +2059,9 @@
                 state.lastRenderedCueText = null;
                 state.lastCueIndex = 0;
                 state.currentTracks = [];
+                state.originalEntries = [];
+                state.hasEntryEdits = false;
+                state.rippleMode = false;
                 elements.subtitleOverlay.textContent = '';
                 elements.trackWarning.classList.add('is-hidden');
                 elements.trackWarning.textContent = '';

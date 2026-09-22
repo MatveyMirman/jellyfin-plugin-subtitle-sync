@@ -80,10 +80,14 @@ dotnet build -c Release -o ../../build/plugin
 | Interactive timeline | Visual subtitle cue bars with zoom/pan |
 | Audio waveform | Optional visualization (generated on demand, cached) |
 | Draggable cues | Drag subtitle layer to adjust offset visually |
+| Ripple edit mode | Move a cue and every **later** cue, leaving earlier cues untouched |
+| Cue duration editing | Drag a cue's left or right edge to change how long it stays on screen |
+| Revert cue edits | One click restores every cue to the pristine original timings |
 | Precision controls | ±100/500/1000ms buttons + numeric input |
 | Real-time preview | Subtitle overlay updates as you adjust |
 | Current cue display | Shows nearest subtitle text at playback position |
 | Save as Offset File | Non-destructive: creates new file alongside original |
+| Save as New File | Non-destructive: writes per-cue edits to a file you name |
 | Replace Original | Destructive: overwrites source file (with confirmation) |
 | Always from original | Offset is always computed from the original file |
 | Responsive layout | Side-by-side ≥1024px, stacked below |
@@ -97,10 +101,34 @@ dotnet build -c Release -o ../../build/plugin
 | Change offset and save again | Overwrites/renames previous offset file |
 | Save with 0ms offset | Deletes the offset file |
 | Replace Original | Overwrites `.srt`, deletes offset file, resets to 0 |
+| Toggle **Ripple: On**, drag cue #40 by +3s | Cues 40 and later move +3s; cues 1–39 stay put |
+| Drag the right edge of a cue | That cue stays on screen longer (ripple off: only that cue changes) |
+| Save after any cue edit | Prompts for a file name and writes a new `.srt` (e.g. `Movie.en.Resync.srt`) |
+
+### Edit Modes
+
+The timeline has two editing behaviours, toggled with the **Ripple** button:
+
+| Mode | Dragging a cue bar | Dragging a cue edge |
+|------|--------------------|---------------------|
+| **Ripple: Off** (default) | Shifts the **entire** track — the classic uniform offset | Changes only that cue's duration |
+| **Ripple: On** | Shifts the dragged cue **and all later cues**; earlier cues never move | Changes that cue's duration **and** shifts all later cues by the same amount, preserving gaps |
+
+Ripple mode is for subtitles that drift out of sync partway through — for example
+after an advert break or a missing scene — where the first half is already correct.
+
+Because these edits are non-uniform, they cannot be encoded in the
+`.Offset+1234ms.srt` file name. Once any cue has been individually moved or
+resized, **Save as Offset File** becomes **Save as New File** and asks you for a
+name. Uniform offsets with no cue edits keep using the original offset-file
+naming, so existing behaviour is unchanged.
 
 ### Notes
 
 - Offset is always computed from the **original** file (no accumulated drift)
+- Cue edits are also applied to a freshly read **original** file, matched by cue position
+- Ripple edits can make cues overlap if you drag a cue behind an earlier one; the plugin allows this by design
+- Edited cues are highlighted amber on the timeline
 - Only external `.srt` files are supported
 - Embedded subtitles are not shown in the tool
 - Only one offset file per language per video
@@ -214,6 +242,24 @@ Creates a new offset `.srt` file alongside the original.
 **Response (200):** `{ "generatedFile": "Movie.en.Offset+2000ms.srt", "trackName": "English (Offset+2000ms)" }`
 **Response (204):** When `offsetMs=0` — deletes existing offset file.
 
+For non-uniform edits (ripple shifts, per-cue durations) send explicit timings
+instead. `offsetMs` is then ignored, and `fileName` names the output file
+(defaults to `<video>.<lang>.Resync.srt`):
+
+```json
+{
+  "itemId": "guid",
+  "subtitleStreamIndex": 3,
+  "fileName": "Movie.en.Resync.srt",
+  "entries": [{ "ordinal": 0, "startMs": 5200, "endMs": 8200 }]
+}
+```
+
+`ordinal` is the zero-based position of the cue in the original file, as
+returned by `SubtitleContent`. Entries with no supplied timing keep their
+original times. The file name is reduced to a bare name (path traversal is
+rejected) and may not resolve to the original subtitle.
+
 ### `POST /SubtitleOffset/ReplaceOriginal`
 
 Overwrites the original `.srt` with adjusted timings.
@@ -222,6 +268,9 @@ Overwrites the original `.srt` with adjusted timings.
 ```json
 { "itemId": "guid", "subtitleStreamIndex": 3, "offsetMs": 2000 }
 ```
+
+Also accepts an `entries` array of explicit per-cue timings, in the same format
+as `Generate`, to overwrite the original with non-uniform edits.
 
 **Response (200):** `{ "replacedFile": "Movie.en.srt", "offsetApplied": 2000 }`
 
@@ -235,7 +284,7 @@ Returns parsed subtitle entries for the timeline.
   "language": "en",
   "isOffsetFile": false,
   "existingOffsetMs": 2000,
-  "entries": [{ "index": 1, "startMs": 5000, "endMs": 8000, "text": "Hello" }]
+  "entries": [{ "ordinal": 0, "index": 1, "startMs": 5000, "endMs": 8000, "text": "Hello" }]
 }
 ```
 
