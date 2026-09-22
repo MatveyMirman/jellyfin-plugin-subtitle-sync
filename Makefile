@@ -15,6 +15,10 @@ endif
 endif
 export JELLYFIN_VERSION
 
+# Compose V2 ships as a `docker compose` plugin; fall back to the standalone
+# `docker-compose` v1 binary when the plugin is not installed.
+DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; else echo "docker-compose"; fi)
+
 # Build the plugin
 build:
 	cd src/Jellyfin.Plugin.SubtitleOffset && dotnet build -c Release -o ../../build/plugin
@@ -36,7 +40,7 @@ generate-video:
 
 # Start the dev environment
 up: build generate-video
-	docker compose up -d
+	$(DOCKER_COMPOSE) up -d
 	@echo "Waiting for Jellyfin $(JELLYFIN_VERSION) to start..."
 	@sleep 10
 	bash scripts/setup-jellyfin.sh
@@ -49,10 +53,10 @@ up: build generate-video
 
 # Stop the dev environment
 down:
-	docker compose down
+	$(DOCKER_COMPOSE) down
 
 # Clean everything
 clean: down
 	rm -rf build/
 	rm -f docker/media/*.Offset*.srt
-	docker compose down -v
+	$(DOCKER_COMPOSE) down -v
