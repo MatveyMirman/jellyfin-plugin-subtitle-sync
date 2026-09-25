@@ -137,7 +137,7 @@ public class SubtitleOffsetController : ControllerBase
             return BadRequest(new { error = "itemId is required" });
         }
 
-        if (request.OffsetMs == 0)
+        if (request.OffsetMs == 0 && !request.HasExplicitTimings)
         {
             return BadRequest(new { error = "Cannot replace original with zero offset" });
         }
@@ -306,6 +306,11 @@ public class SubtitleOffsetController : ControllerBase
 /// </summary>
 public class GenerateRequest
 {
+    /// <summary>
+    /// Gets a value indicating whether this request contains non-uniform cue timings.
+    /// </summary>
+    public bool HasExplicitTimings => Entries is { Count: > 0 };
+
     /// <summary>
     /// Gets or sets the item ID.
     /// </summary>
