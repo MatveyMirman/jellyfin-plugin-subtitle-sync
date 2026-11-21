@@ -5,7 +5,7 @@
   "guid": "b3c4d5e6-f7a8-9012-bcde-f34567890abc",
   "name": "Subtitle Sync",
   "overview": "Admin tool to fix subtitle timing for all users",
-  "owner": "90andrecarvalho",
+  "owner": "MatveyMirman",
   "targetAbi": "10.11.0.0",
   "timestamp": "2024-01-01T00:00:00Z",
   "version": "2.0.0.0",

@@ -39,7 +39,7 @@ Admin opens Plugin Settings → Subtitle Sync
 1. In Jellyfin, go to **Admin Dashboard → Plugins → Repositories**
 2. Click **Add** and paste this URL:
    ```
-   https://raw.githubusercontent.com/90andrecarvalho/jellyfin-plugin-subtitle-sync/main/manifest.json
+   https://raw.githubusercontent.com/MatveyMirman/jellyfin-plugin-subtitle-sync/main/manifest.json
    ```
 3. Go back to **Plugins → Catalog**, find **Subtitle Sync**, and click **Install**
 4. Restart Jellyfin
@@ -48,7 +48,7 @@ Updates will appear automatically in the dashboard.
 
 ### Option B: Manual Install
 
-1. Download the latest `.zip` from [GitHub Releases](https://github.com/90andrecarvalho/jellyfin-plugin-subtitle-sync/releases)
+1. Download the latest `.zip` from [GitHub Releases](https://github.com/MatveyMirman/jellyfin-plugin-subtitle-sync/releases)
 2. Extract and copy `Jellyfin.Plugin.SubtitleOffset.dll`, `meta.json`, and `thumb.png` to your plugins directory:
 
    - **Linux**: `/var/lib/jellyfin/plugins/SubtitleSync/`

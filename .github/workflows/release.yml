@@ -67,7 +67,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           CHECKSUM="${{ steps.checksum.outputs.md5 }}"
           TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          DOWNLOAD_URL="https://github.com/90andrecarvalho/jellyfin-plugin-subtitle-sync/releases/download/v${VERSION}/subtitle-sync-${VERSION}.zip"
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/subtitle-sync-${VERSION}.zip"
 
           cat > manifest.json << EOF
           [
@@ -76,13 +76,13 @@ jobs:
               "name": "Subtitle Sync",
               "overview": "Admin tool to fix subtitle timing for all users",
               "description": "A Jellyfin plugin that lets admins visually adjust subtitle timing and save corrected .srt files for all users.",
-              "owner": "90andrecarvalho",
+              "owner": "${GITHUB_REPOSITORY_OWNER}",
               "category": "Subtitles",
-              "imageUrl": "https://raw.githubusercontent.com/90andrecarvalho/jellyfin-plugin-subtitle-sync/main/src/Jellyfin.Plugin.SubtitleOffset/Configuration/logo.svg",
+              "imageUrl": "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${{ github.event.repository.default_branch }}/src/Jellyfin.Plugin.SubtitleOffset/Configuration/logo.svg",
               "versions": [
                 {
                   "version": "${VERSION}",
-                  "changelog": "See https://github.com/90andrecarvalho/jellyfin-plugin-subtitle-sync/releases/tag/v${VERSION}",
+                  "changelog": "See https://github.com/${GITHUB_REPOSITORY}/releases/tag/v${VERSION}",
                   "targetAbi": "10.11.0.0",
                   "sourceUrl": "${DOWNLOAD_URL}",
                   "checksum": "${CHECKSUM}",
@@ -97,8 +97,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
+          git fetch origin "${{ github.event.repository.default_branch }}"
+          git checkout "${{ github.event.repository.default_branch }}"
           git add manifest.json
           git commit -m "Update manifest.json for v${{ steps.version.outputs.version }}" || echo "No changes"
-          git push origin main
+          git push origin "${{ github.event.repository.default_branch }}"
